@@ -1,0 +1,63 @@
+rownames(train)=NULL
+rownames(test)=NULL
+rownames(verification)=NULL
+gene0=c("cg03396260", "cg05914150", "cg07475126", "cg17968322", "cg18657707", 
+        "cg19572487", "cg20184330", "cg20381728", "cg22823192")
+gene1=c("sex", "age", "SCC", "CYR", "cg03396260", "cg05914150", "cg07475126","cg17968322", "cg19572487", "cg20184330", "cg20381728", "cg22823192")
+gene=c("sex", "age", "CEA","SCC", "CYR", "cg03396260", "cg05914150", "cg07475126","cg17968322", "cg18657707","cg19572487", "cg20184330", "cg20381728", "cg22823192")
+
+a<- read_excel("D:/ESCC/芯片图谱/中文/S/ESCC1217.xlsx", sheet = 1)         # 指定工作表索引[^69^]
+a <- column_to_rownames(a,var = "id")
+train=a[a$gg=="train",c("group",gene)]
+train$group=factor(train$group)
+test=a[a$gg=="test",c("group",gene)]
+verification=a[a$gg=="wai",c("group",gene)]
+#1.lasso
+data=train[,c("group",gene1)]
+trainx=as.matrix(data[,gene1])
+trainy=as.factor(data[,1])
+set.seed(178)
+fitCV <- cv.glmnet(trainx, trainy, family = "binomial",
+                   type.measure = "class",
+                   nfolds = 5)
+fit <- glmnet(trainx, trainy, family = "binomial", alpha = 1) 
+best_lambda <- fitCV$lambda.min
+lasso <- glmnet(trainx, trainy, alpha = 1,family="binomial", lambda = best_lambda)
+coef.min = coef(fitCV, s = "lambda.min")
+cv_coef = coef.min %>% as.matrix() %>% as.data.frame %>% filter(abs(.)>0)
+gene_la=rownames(cv_coef)[order(abs(cv_coef$s1), decreasing = TRUE)]
+y_predicted.train <- predict(lasso, s = best_lambda, newx = trainx,type="response")
+ML=data.frame(class=trainy,lasso=y_predicted.train[,1])
+## 2.RF###
+set.seed(7)
+param_grid <- expand.grid(mtry = sample((round(log2(ncol(trainx)))):(round(log2(ncol(trainx)))+4),3))
+ctrl <- trainControl(method = "cv", number = 5, verboseIter = FALSE)
+set.seed(7)
+tuned_model <- train(
+  x = trainx,
+  y = trainy,
+  method = "rf",
+  tuneGrid = param_grid,
+  trControl = ctrl)
+mtry=tuned_model[["bestTune"]][["mtry"]]
+fit <- randomForest(group ~ ., data = data, importance = T,mtry=mtry)
+ntree=which.min(fit$err.rate[,1])
+RF <- randomForest(group ~ ., data = data, ntree = ntree,mtry=mtry,importance = T,maxnodes=(round(log2(ncol(trainx)))+1)+1)#11ncol(trainx)
+ML$RF <- predict(RF, newdata = data,type = "prob")[,2]
+#
+df=yp3#Wai
+a1=a2[rownames(wai),]
+df=yp2#Test
+a1=a2[rownames(test),]
+df=yp1#train
+a1=a2[rownames(train),]
+
+h=ifelse(a1$CEA<=5&a1$SCC<=2.7&a1$CYR<=3.3,0,1)
+yp3=data.frame(group=df$class,ESCCseeker=df$pre,Methy9=df$M9,CEA=a1$CEA,SCC=a1$SCC,CYR=a1$CYR,TMcombine=h,class=df$class)
+#yp$group=factor(yp$group,levels =c("Control","HGIN","ESCC") )
+#yp$group=as.numeric(yp$group)-1
+yp1$class=ifelse(yp1$group==0,0,1)
+rm(list = setdiff(ls(), c("yp1", "yp2", "yp3","yp4","yp5","data1","data2")))
+save.image("Performance.RData")
+rm(list = setdiff(ls(), c("raw_sens","stage_aair_data","stage_css_data")))
+save.image("Interception.RData")
