@@ -1,0 +1,1537 @@
+# 代码：ESCCseeker 与血细胞比例的关联分析
+# 作者：根据审稿意见定制
+# 包含主分析、交互作用、敏感性分析及AUC比较
+# 一、匹配性别年龄================================
+File="D:/ESCC/芯片图谱/中文/S/CRM_revise/"
+trr=read_excel("D:/ESCC/芯片图谱/中文/S/ESCC1217.xlsx", sheet = 2)         # 指定工作表索引[^69^]
+trr <- column_to_rownames(trr,var = "id")
+trr=trr[trr$gg=="yes",-1]
+age_diff=5
+clinical_data=trr
+# 统计各组样本数
+nc_original <- sum(clinical_data$group == "Control")
+escc_original <- sum(clinical_data$group == "ESCC")
+# 检查性别分布
+gender_table <- table(clinical_data$group, clinical_data$sex)
+print(gender_table)
+
+# 检查年龄分布
+age_summary <- clinical_data %>%
+  group_by(group) %>%
+  dplyr::summarize(
+    Mean_Age = round(mean(age, na.rm = TRUE), 2),
+    SD_Age = round(sd(age, na.rm = TRUE), 2),
+    Min_Age = min(age, na.rm = TRUE),
+    Max_Age = max(age, na.rm = TRUE),
+    N = n()
+  )
+print(as.data.frame(age_summary))
+# ①. 倾向性评分匹配============================
+
+# 准备匹配数据
+match_data <- trr
+
+# 按性别分层匹配
+matched_pairs <- data.frame()
+match_data$Sample=rownames(match_data)
+# 分别处理男性和女性
+for (gender_type in c(0,1)) {
+  cat("\n处理", gender_type, "性别的匹配...\n")
+  
+  # 筛选当前性别的样本
+  gender_data <- match_data[match_data$sex == gender_type, ]
+  
+  if (nrow(gender_data) == 0) {
+    cat("  ", gender_type, "性别的样本数为0，跳过\n")
+    next
+  }
+  
+  # 检查当前性别中是否有两组样本
+  escc_gender <- gender_data[gender_data$group == "ESCC", ]
+  nc_gender <- gender_data[gender_data$group == "Control", ]
+  
+  cat("  ", gender_type, "性别: ESCC组", nrow(escc_gender), "人，NC组", nrow(nc_gender), "人\n")
+  
+  if (nrow(escc_gender) == 0 || nrow(nc_gender) == 0) {
+    cat("  ", gender_type, "性别中有一组样本数为0，无法匹配，跳过\n")
+    next
+  }
+  
+  # 为每个escc样本寻找匹配的NC样本
+  escc_matched <- 0
+  nc_available <- nc_gender
+  
+  # 按年龄排序escc样本，从年龄中间的样本开始匹配（提高匹配成功率）
+  escc_sorted <- escc_gender[order(escc_gender$age), ]
+  
+  for (i in 1:nrow(escc_sorted)) {
+    escc_sample <- escc_sorted[i, ]
+    escc_age <- escc_sample$age
+    
+    # 寻找年龄相差3岁以内的NC样本
+    age_diff <- abs(nc_available$age - escc_age)
+    potential_matches <- nc_available[age_diff <= 3, ]
+    
+    if (nrow(potential_matches) > 0) {
+      # 选择年龄最接近的NC样本
+      age_diff_potential <- abs(potential_matches$age - escc_age)
+      best_match_idx <- which.min(age_diff_potential)
+      nc_match <- potential_matches[best_match_idx, ]
+      
+      # 记录匹配对
+      matched_pair <- data.frame(
+        ESCC_Sample = escc_sample$Sample,
+        NC_Sample = nc_match$Sample,
+        Gender = gender_type,
+        ESCC_Age = escc_sample$age,
+        NC_Age = nc_match$age,
+        Age_Diff = abs(escc_sample$age - nc_match$age),
+        Pair_ID = paste0("P", sprintf("%03d", nrow(matched_pairs) + 1))
+      )
+      matched_pairs <- rbind(matched_pairs, matched_pair)
+      
+      # 从可用NC样本中移除已匹配的样本
+      nc_available <- nc_available[nc_available$Sample != nc_match$Sample, ]
+      escc_matched <- escc_matched + 1
+      
+      cat("   匹配成功: ESCC样本", escc_sample$Sample, "(年龄", escc_age, ") -> NC样本", 
+          nc_match$Sample, "(年龄", nc_match$age, ")，年龄差", round(abs(escc_sample$age - nc_match$age), 1), "岁\n")
+    } else {
+      cat("   匹配失败: ESCC样本", escc_sample$Sample, "(年龄", escc_age, ") 找不到年龄相差3岁以内的匹配\n")
+    }
+    
+    # 如果没有可用的NC样本了，停止匹配
+    if (nrow(nc_available) == 0) {
+      cat("  ", gender_type, "性别: 没有更多可用的NC样本，停止匹配\n")
+      break
+    }
+  }
+  
+  cat("  ", gender_type, "性别匹配完成: 成功匹配", escc_matched, "对\n")
+}
+
+# ②. 匹配结果分析============================
+cat("\n" , paste0(rep("=", 50), collapse = ""), "\n")
+cat("匹配结果分析:\n")
+
+cat("总共成功匹配", nrow(matched_pairs), "对样本\n")
+cat("男性匹配对数:", sum(matched_pairs$Gender == 1), "\n")
+cat("女性匹配对数:", sum(matched_pairs$Gender == 0), "\n")
+
+# 计算年龄差统计
+cat("\n年龄差统计:\n")
+cat("平均年龄差:", round(mean(matched_pairs$Age_Diff), 2), "岁\n")
+cat("年龄差标准差:", round(sd(matched_pairs$Age_Diff), 2), "岁\n")
+cat("最大年龄差:", round(max(matched_pairs$Age_Diff), 2), "岁\n")
+cat("年龄差分布:\n")
+age_diff_table <- table(cut(matched_pairs$Age_Diff, breaks = c(0, 1, 2, 3, Inf), 
+                            labels = c("0-1岁", "1-2岁", "2-3岁", ">3岁")))
+print(age_diff_table)
+
+# 提取匹配后的所有样本
+matched_samples <- c(matched_pairs$ESCC_Sample, matched_pairs$NC_Sample)
+matched_data <- trr[rownames(trr) %in% matched_samples, ]
+
+# 匹配后的人口统计学比较
+cat("\n匹配后的人口统计学比较:\n")
+
+# 性别分布
+cat("匹配后性别分布:\n")
+matched_gender_table <- table(matched_data$group, matched_data$sex)
+print(matched_gender_table)
+
+# 年龄分布
+cat("\n匹配后年龄统计:\n")
+matched_age_summary <- matched_data %>%
+  group_by(group) %>%
+  dplyr::summarize(
+    Mean_Age = round(mean(age, na.rm = TRUE), 2),
+    SD_Age = round(sd(age, na.rm = TRUE), 2),
+    Min_Age = min(age, na.rm = TRUE),
+    Max_Age = max(age, na.rm = TRUE),
+    N = n()
+  )
+print(as.data.frame(matched_age_summary))
+
+# 年龄t检验（匹配后）
+age_nc_matched <- matched_data$age[matched_data$group == "Control"]
+age_escc_matched <- matched_data$age[matched_data$group == "ESCC"]
+
+# 检查是否满足t检验条件
+if (length(age_nc_matched) > 1 && length(age_escc_matched) > 1) {
+  age_t_test_matched <- t.test(age_nc_matched, age_escc_matched, paired = FALSE)
+  cat("\n匹配后年龄t检验:\n")
+  cat("t值:", round(age_t_test_matched$statistic, 3), "\n")
+  cat("p值:", round(age_t_test_matched$p.value, 4), "\n")
+  age_p_value <- age_t_test_matched$p.value
+} else {
+  cat("\n匹配后年龄t检验: 样本量不足，无法进行t检验\n")
+  age_p_value <- NA
+}
+write.csv(matched_data,"Matched_CRM.csv")
+write.xlsx(matched_pairs, file.path(match_output_dir, "Matched_pairs.xlsx"), rowNames = FALSE)
+cat("匹配对已保存: ", file.path(match_output_dir, "Matched_pairs.xlsx"), "\n")
+
+# 保存匹配后的样本列表
+matched_samples_df <- data.frame(
+  Sample = matched_samples,
+  Group = ifelse(matched_samples %in% matched_pairs$ESCC_Sample, "ESCC", "NC"),
+  Pair_ID = rep(matched_pairs$Pair_ID, each = 2),
+  stringsAsFactors = FALSE
+)
+write.csv(matched_pairs,"match_CRM.csv")
+# ③. 最优算法===========================
+library(lpSolve)
+
+# 定义两个组的最优匹配函数
+match_two_groups_lp <- function(data, gender_type, max_age_diff) {
+  # 筛选当前性别
+  gender_data <- data[data$sex == gender_type, ]
+  if (nrow(gender_data) == 0) {
+    cat("  ", gender_type, "性别: 无样本，跳过\n")
+    return(NULL)
+  }
+  
+  # 拆分为 ESCC 和 Control 两组，按年龄排序（便于调试，非必需）
+  escc <- gender_data[gender_data$group == "ESCC", ] %>% arrange(age)
+  control <- gender_data[gender_data$group == "Control", ] %>% arrange(age)
+  
+  if (nrow(escc) == 0 || nrow(control) == 0) {
+    cat("  ", gender_type, "性别: ESCC 或 Control 组为空，无法匹配\n")
+    return(NULL)
+  }
+  
+  n_escc <- nrow(escc)
+  n_control <- nrow(control)
+  
+  # 构建所有可能的匹配边（年龄差 ≤ max_age_diff 的视为可匹配）
+  edges <- list()
+  edge_idx <- 1
+  for (i in 1:n_escc) {
+    for (j in 1:n_control) {
+      if (abs(escc$age[i] - control$age[j]) <= max_age_diff) {
+        edges[[edge_idx]] <- c(i, j)   # i = ESCC 索引, j = Control 索引
+        edge_idx <- edge_idx + 1
+      }
+    }
+  }
+  
+  if (length(edges) == 0) {
+    cat("  ", gender_type, "性别: 没有满足年龄差约束的匹配对，跳过\n")
+    return(NULL)
+  }
+  
+  n_edges <- length(edges)
+  
+  # 构建约束矩阵
+  # 约束1: 每个 ESCC 样本最多使用一次
+  # 约束2: 每个 Control 样本最多使用一次
+  constraints <- matrix(0, nrow = n_escc + n_control, ncol = n_edges)
+  rhs <- rep(1, n_escc + n_control)      # 右侧常数（≤1）
+  direction <- rep("<=", n_escc + n_control)
+  
+  for (e in 1:n_edges) {
+    i <- edges[[e]][1]   # ESCC 索引
+    j <- edges[[e]][2]   # Control 索引
+    constraints[i, e] <- 1                     # ESCC 约束行
+    constraints[n_escc + j, e] <- 1            # Control 约束行
+  }
+  
+  # 目标函数：每条边的权重为 1（最大化匹配数量）
+  objective <- rep(1, n_edges)
+  
+  # 求解二元整数线性规划（最大匹配）
+  solution <- lp("max", objective, constraints, direction, rhs, all.bin = TRUE)
+  
+  if (solution$status != 0) {
+    cat("  ", gender_type, "性别: 求解失败（状态码", solution$status, "）\n")
+    return(NULL)
+  }
+  
+  selected_edges <- which(solution$solution == 1)
+  if (length(selected_edges) == 0) {
+    cat("  ", gender_type, "性别: 无匹配结果\n")
+    return(NULL)
+  }
+  
+  # 整理匹配结果
+  result_list <- list()
+  for (k in seq_along(selected_edges)) {
+    edge <- edges[[selected_edges[k]]]
+    i <- edge[1]; j <- edge[2]
+    result_list[[k]] <- data.frame(
+      Pair_ID = paste0(gender_type, "_", sprintf("%03d", k)),
+      Gender = gender_type,
+      ESCC_Sample = escc$Sample[i],
+      NC_Sample = control$Sample[j],
+      ESCC_Age = escc$age[i],
+      NC_Age = control$age[j],
+      Age_Diff = abs(escc$age[i] - control$age[j]),
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  result <- do.call(rbind, result_list)
+  cat("  ", gender_type, "性别: 成功匹配", nrow(result), "对（最大可能匹配数 =", nrow(result), "）\n")
+  return(result)
+}
+match_data <- trr
+match_data$Sample <- rownames(match_data)   # 或用其他方式确定样本标识
+
+# 存储所有性别的匹配结果
+matched_pairs<- data.frame()
+
+for (gender_type in c(0, 1)) {
+  cat("\n处理", gender_type, "性别的匹配...\n")
+  res <- match_two_groups_lp(match_data, gender_type, max_age_diff = 5)
+  if (!is.null(res)) {
+    matched_pairs <- rbind(matched_pairs, res)
+  }
+}
+matched_samples <- c(matched_pairs$ESCC_Sample, matched_pairs$NC_Sample)
+matched_data <- trr[rownames(trr) %in% matched_samples, ]
+#二、细胞比例------------------------------
+# 加载必要的包
+library(tidyverse)
+library(broom)
+library(car)        # ANOVA 及线性假设
+library(emmeans)    # 简单斜率分析
+library(pROC)       # ROC 曲线及 AUC
+library(ggpubr)     # 绘图美化
+library(sandwich)   # 稳健标准误
+library(lmtest)     # coeftest
+library(readxl)
+# 1. 读取数据（请修改文件路径）
+a<- read_excel("D:/OneDrive/桌面/查阅血常规信息.xlsx", sheet = "CBC")         # 指定工作表索引[^69^]
+a <- column_to_rownames(a,var = "id")
+# 检查变量名，如有不同请调整
+# 预期列名：ID, Group, ESCCseeker, sex, age, neu, lym, eos, baso, mon
+# 数据清洗
+matched_data <- read_excel("D:/ESCC/芯片图谱/中文/S/ESCC1217.xlsx", sheet = "match") 
+data=a[rownames(a)%in%matched_data$id,]
+data <- data %>%
+  mutate(
+    Group = factor(Group, levels = c("Control", "ESCC")),  # 设置对照组为参考
+    sex = factor(sex, labels = c("Female", "Male")),
+    NLR = neu / lym,                       # 中性粒细胞/淋巴细胞比值
+    logNLR = log(NLR + 0.01),              # 对数转换（因可能有0值，加小常数）
+    Monocyte_pct = mon                     # 单核细胞百分比
+  ) %>%
+  filter(complete.cases(ESCCseeker, age, sex, NLR, Monocyte_pct))
+
+# 查看数据结构
+glimpse(data)
+# 2. 描述统计（表1风格）
+desc_table <- data %>%
+  group_by(Group) %>%
+  summarise(
+    N = n(),
+    Age = paste0(round(mean(age),1), "±", round(sd(age),1)),
+    Sex_Male = paste0(sum(sex=="Male"), " (", round(100*mean(sex=="Male"),1), "%)"),
+    ESCCseeker = paste0(round(mean(ESCCseeker),2), "±", round(sd(ESCCseeker),2)),
+    NLR = paste0(round(mean(NLR, na.rm=T),2), "±", round(sd(NLR, na.rm=T),2)),
+    Neu_pct = paste0(round(mean(neu, na.rm=T),1), "±", round(sd(neu, na.rm=T),1)),
+    Lym_pct = paste0(round(mean(lym, na.rm=T),1), "±", round(sd(lym, na.rm=T),1)),
+    Mon_pct = paste0(round(mean(mon, na.rm=T),1), "±", round(sd(mon, na.rm=T),1))
+  )
+print(desc_table)
+# 组间比较（t检验或Wilcoxon）
+compare_vars <- c("ESCCseeker", "NLR", "neu", "lym", "mon")
+p_values <- sapply(compare_vars, function(v) {
+  if(v=="ESCCseeker") {
+    t.test(data[[v]] ~ data$Group)$p.value
+  } else {
+    wilcox.test(data[[v]] ~ data$Group)$p.value  # 细胞比例常偏态，用非参
+  }
+})
+print(p_values)
+
+# 3. 主分析：多元线性回归（以 logNLR 为例）
+
+# 模型1：不包含分组，只调整年龄+性别
+model1 <- lm(ESCCseeker ~ logNLR + age + sex, data = data)
+# 模型2：加入分组变量
+model2 <- lm(ESCCseeker ~ logNLR + Group + age + sex, data = data)
+# 模型3：加入交互项 logNLR * Group
+model3 <- lm(ESCCseeker ~ logNLR * Group + age + sex, data = data)
+
+# 输出模型摘要（含稳健标准误，以应对异方差）
+robust_se <- function(model) {
+  coeftest(model, vcov = vcovHC(model, type = "HC3"))
+}
+
+cat("\n===== Model1 (no Group) =====\n")
+print(robust_se(model1))
+cat("\n===== Model2 (add Group) =====\n")
+print(robust_se(model2))
+cat("\n===== Model3 (interaction) =====\n")
+print(robust_se(model3))
+
+# 提取并整理成表格
+tidy_model3 <- tidy(model3, conf.int = TRUE) %>% 
+  filter(term %in% c("logNLR", "GroupESCC", "logNLR:GroupESCC"))
+print(tidy_model3)
+
+# 若交互项显著，进行简单斜率分析（分别计算两组中 logNLR 的斜率）
+if(anova(model3)[["Pr(>F)"]][3] < 0.05) {
+  simple_slopes <- emtrends(model3, ~ Group, var = "logNLR")
+  print(simple_slopes)
+}
+
+# 4. 绘图：分组散点图 + 回归线
+p <- ggplot(data, aes(x = logNLR, y = ESCCseeker, color = Group)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, aes(fill = Group)) +
+  labs(x = "log(Neutrophil/Lymphocyte ratio + 0.01)", 
+       y = "ESCCseeker score",
+       title = "Association between ESCCseeker and NLR by Group") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), 
+           label.x.npc = "left", label.y.npc = "top", size = 3)
+print(p)
+# 保存为文件
+ggsave("ESCCseeker_vs_NLR_byGroup.png", p, width = 6, height = 4, dpi = 300)
+
+# 5. 敏感性分析 
+
+# 5.1 使用其他细胞比例指标（单核细胞%、淋巴细胞%）
+#model_mon <- lm(ESCCseeker ~ mon * Group + age + sex, data = data)
+#model_lym <- lm(ESCCseeker ~ lym * Group + age + sex, data = data)
+model_mon <- lm(ESCCseeker ~ mon, data = data)
+model_lym <- lm(ESCCseeker ~ lym, data = data)
+
+cat("\n===== Sensitivity: Monocyte% =====\n")
+print(robust_se(model_mon))
+cat("\n===== Sensitivity: Lymphocyte% =====\n")
+print(robust_se(model_lym))
+
+# 5.2 将细胞比例作为协变量后，比较 ESCCseeker 区分病例/对照的 AUC 变化
+# 计算基础模型（仅 age + sex）预测 Group 的 AUC
+# 注意：因变量是 Group，自变量是 ESCCseeker + 协变量
+# 我们想知道加入细胞比例后，ESCCseeker 的判别能力是否下降
+
+# 构建三个 logistic 模型
+logit_basic <- glm(Group ~ ESCCseeker + age + sex, data = data, family = binomial)
+logit_cell <- glm(Group ~ ESCCseeker + age + sex + logNLR + Monocyte_pct, 
+                  data = data, family = binomial)
+# 仅含细胞比例和协变量（无 ESCCseeker）作为基准
+logit_cell_only <- glm(Group ~ age + sex + logNLR + Monocyte_pct, 
+                       data = data, family = binomial)
+
+# 预测概率
+pred_basic <- predict(logit_basic, type = "response")
+pred_cell <- predict(logit_cell, type = "response")
+pred_cell_only <- predict(logit_cell_only, type = "response")
+
+# 计算 AUC
+auc_basic <- roc(data$Group, pred_basic)$auc
+auc_cell <- roc(data$Group, pred_cell)$auc
+auc_cell_only <- roc(data$Group, pred_cell_only)$auc
+
+# 比较 AUC（DeLong 检验）
+roc_basic <- roc(data$Group, pred_basic)
+roc_cell <- roc(data$Group, pred_cell)
+delong_test <- roc.test(roc_basic, roc_cell, method = "delong")
+
+cat("\n===== AUC Comparison =====")
+cat("\nModel (age+sex+ESCCseeker): AUC =", round(auc_basic, 3))
+cat("\nModel (+ cell proportions): AUC =", round(auc_cell, 3))
+cat("\nModel (cell proportions only): AUC =", round(auc_cell_only, 3))
+cat("\nDeLong test p-value (basic vs cell):", delong_test$p.value)
+
+# 可选：绘制三条 ROC 曲线
+plot(roc_basic, col = "blue", lwd = 2, main = "ROC Curves")
+lines(roc_cell, col = "red", lwd = 2)
+lines(roc(data$Group, pred_cell_only), col = "green", lwd = 2)
+legend("bottomright", legend = c("Basic (age/sex+ESCCseeker)", 
+                                 "+Cell proportions", 
+                                 "Cell proportions only"),
+       col = c("blue", "red", "green"), lwd = 2)
+
+# 5.3 使用稳健回归（对异常值不敏感，可选）
+library(MASS)
+rlm_model <- rlm(ESCCseeker ~ logNLR * Group + age + sex, data = data)
+summary(rlm_model)
+
+# 6. 生成最终结果表（用于论文）
+# 将三个主要模型的关键结果整理成表
+# 修复后的 results_table 函数
+results_table <- function() {
+  # 定义三个模型
+  models <- list(
+    "Model1 (no Group)" = model1,
+    "Model2 (+ Group)" = model2,
+    "Model3 (interaction)" = model3
+  )
+  
+  # 定义要提取的系数名称（可能出现的）
+  target_terms <- c("logNLR", "GroupESCC", "logNLR:GroupESCC")
+  
+  # 对每个模型提取系数，并确保包含所有 target_terms（缺失则填 NA）
+  results_list <- lapply(names(models), function(name) {
+    m <- models[[name]]
+    # 使用 broom::tidy 获取系数及置信区间
+    coefs <- broom::tidy(m, conf.int = TRUE)
+    # 只保留目标项
+    coefs <- coefs[coefs$term %in% target_terms, ]
+    # 如果某些目标项缺失，手动补全 NA 行
+    missing_terms <- setdiff(target_terms, coefs$term)
+    if(length(missing_terms) > 0) {
+      missing_rows <- data.frame(
+        term = missing_terms,
+        estimate = NA,
+        std.error = NA,
+        statistic = NA,
+        p.value = NA,
+        conf.low = NA,
+        conf.high = NA,
+        stringsAsFactors = FALSE
+      )
+      coefs <- rbind(coefs, missing_rows)
+    }
+    # 添加模型名称列
+    coefs$Model <- name
+    # 重命名 term 为更友好的展示名称
+    coefs$term <- dplyr::recode(coefs$term,
+                                "logNLR" = "NLR (log)",
+                                "GroupESCC" = "Group (ESCC vs Control)",
+                                "logNLR:GroupESCC" = "NLR × Group")
+    return(coefs)
+  })
+  
+  # 合并所有模型的结果
+  final <- dplyr::bind_rows(results_list) %>%
+    dplyr::select(Model, term, estimate, std.error, p.value, conf.low, conf.high) %>%
+    dplyr::mutate(dplyr::across(where(is.numeric), ~ round(., 3)))
+  
+  return(final)
+}
+
+# 重新运行生成表格
+final_table <- results_table()
+print(final_table)
+
+# 可选：保存为 CSV
+write.csv(final_table, "regression_results.csv", row.names = FALSE)
+# 7. 输出会话信息（可重现）
+sessionInfo()
+# *①.Train-CBC==========================
+a<- read_excel("D:/OneDrive/桌面/查阅血常规信息.xlsx", sheet = "CBC")         # 指定工作表索引[^69^]
+a <- column_to_rownames(a,var = "id")
+# 检查变量名，如有不同请调整
+# 预期列名：ID, Group, ESCCseeker, sex, age, neu, lym, eos, baso, mon
+# 数据清洗
+data=a[rownames(a)%in%rownames(train),]
+data <- data %>%
+  mutate(
+    Group = factor(Group, levels = c("Control", "ESCC")),  # 设置对照组为参考
+    sex = factor(sex, labels = c("Female", "Male")),
+    NLR = neu / lym,                       # 中性粒细胞/淋巴细胞比值
+    logNLR = log(NLR + 0.01),              # 对数转换（因可能有0值，加小常数）
+    Monocyte_pct = mon                     # 单核细胞百分比
+  ) %>%
+  filter(complete.cases(ESCCseeker, age, sex, NLR, Monocyte_pct))
+
+# 查看数据结构
+glimpse(data)
+# ①. lym,mon============================
+# 假设数据中有 lym_pct, mon_pct（单位%）
+# 由于存在成分约束（lym + mon + 其他 ≈ 100%），不需要同时纳入所有
+# 直接纳入 lym_pct 和 mon_pct 即可（两者与“其他”线性相关，但一般不会造成严重共线性）
+model_pbmc <- lm(ESCCseeker ~ lym + mon + age + sex + Group, data = data)
+# 检查共线性
+car::vif(model_pbmc)  # 若 VIF > 5 才需处理，通常 lym 与 mon 负相关但 VIF 不高
+
+# 交互作用（是否两组中关系不同）
+model_pbmc_int <- lm(ESCCseeker ~ (lym + mon) * Group + age + sex, data = data)
+
+# 敏感性分析：使用 lym/mon 比值
+data$LMR <- data$lym / data$mon
+#model_lmr <- lm(ESCCseeker ~ LMR + age + sex + Group, data = data)
+model_lmr <- lm(ESCCseeker ~ LMR, data = data)
+
+p1 <- ggplot(data, aes(x = lym, y = ESCCseeker, color = Group)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, aes(fill = Group)) +
+  labs(x = "Lymphocyte percentage (%)", 
+       y = "ESCCseeker score",
+       title = "") +
+  scale_y_continuous(limits = c(0,1.08),breaks = seq(0, 1.0, 0.2), labels = c("0.0", "0.2", "0.4", "0.6", "0.8", "1.0"))+
+  scale_color_manual(values = c("ESCC" ="#EF312C","Control" = "#006BB9")) +
+  scale_fill_manual(values = c("ESCC" ="#EF312C","Control" = "#006BB9")) +
+  theme_bw() +
+  theme(legend.position = "top",panel.grid = element_blank()) +
+  stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), 
+           label.x.npc = "left", label.y.npc = "top", size = 3)
+p1
+ggsave(plot = p1,paste0(File,"Lym.pdf"), width = 3.65, height = 5.21)#4.52_530,4.17_400,3.96_380,4.48-430
+dev.off()
+#2
+p1 <- ggplot(data, aes(x = mon, y = ESCCseeker, color = Group)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, aes(fill = Group)) +
+  labs(x = "Monocyte percentage (%)", 
+       y = "ESCCseeker score",
+       title = "") +
+  scale_y_continuous(limits = c(0,1.08),breaks = seq(0, 1.0, 0.2), labels = c("0.0", "0.2", "0.4", "0.6", "0.8", "1.0"))+
+  scale_color_manual(values = c("ESCC" ="#EF312C","Control" = "#006BB9")) +
+  scale_fill_manual(values = c("ESCC" ="#EF312C","Control" = "#006BB9")) +
+  theme_bw() +
+  theme(legend.position = "bottom",panel.grid = element_blank()) +
+  stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), 
+           label.x.npc = "left", label.y.npc = "top", size = 3)
+p1
+ggsave(plot = p1,paste0(File,"Mono.pdf"), width = 3.65, height = 5.21)#4.52_530,4.17_400,3.96_380,4.48-430
+dev.off()
+#3
+p1 <- ggplot(data, aes(x = neu, y = ESCCseeker, color = Group)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, aes(fill = Group)) +
+  labs(x = "Neutrophil percentage (%)", 
+       y = "ESCCseeker score",
+       title = "") +
+  scale_y_continuous(limits = c(0,1.08),breaks = seq(0, 1.0, 0.2), labels = c("0.0", "0.2", "0.4", "0.6", "0.8", "1.0"))+
+  scale_color_manual(values = c("ESCC" ="#EF312C","Control" = "#006BB9")) +
+  scale_fill_manual(values = c("ESCC" ="#EF312C","Control" = "#006BB9")) +
+  theme_bw() +
+  theme(legend.position = "bottom",panel.grid = element_blank()) +
+  stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), 
+           label.x.npc = "left", label.y.npc = "top", size = 3)
+p1
+ggsave(plot = p1,paste0(File,"Neu.pdf"), width = 3.65, height = 5.21)#4.52_530,4.17_400,3.96_380,4.48-430
+dev.off()
+#4
+p1 <- ggplot(data, aes(x = eos, y = ESCCseeker, color = Group)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, aes(fill = Group)) +
+  labs(x = "Eosinophil percentage (%)", 
+       y = "ESCCseeker score",
+       title = "") +
+  scale_y_continuous(limits = c(0,1.08),breaks = seq(0, 1.0, 0.2), labels = c("0.0", "0.2", "0.4", "0.6", "0.8", "1.0"))+
+  scale_color_manual(values = c("ESCC" ="#EF312C","Control" = "#006BB9")) +
+  scale_fill_manual(values = c("ESCC" ="#EF312C","Control" = "#006BB9")) +
+  theme_bw() +
+  theme(legend.position = "bottom",panel.grid = element_blank()) +
+  stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), 
+           label.x.npc = 0, label.y.npc = 1, size = 3)
+p1
+ggsave(plot = p1,paste0(File,"Eos.pdf"), width = 3.65, height = 5.21)#4.52_530,4.17_400,3.96_380,4.48-430
+dev.off()
+#5
+p1 <- ggplot(data, aes(x = baso, y = ESCCseeker, color = Group)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, aes(fill = Group)) +
+  labs(x = "Basophil percentage (%)", 
+       y = "ESCCseeker score",
+       title = "") +
+  scale_y_continuous(limits = c(0,1.08),breaks = seq(0, 1.0, 0.2), labels = c("0.0", "0.2", "0.4", "0.6", "0.8", "1.0"))+
+  scale_color_manual(values = c("ESCC" ="#EF312C","Control" = "#006BB9")) +
+  scale_fill_manual(values = c("ESCC" ="#EF312C","Control" = "#006BB9")) +
+  theme_bw() +
+  theme(legend.position = "bottom",panel.grid = element_blank()) +
+  stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), 
+           label.x.npc = 0, label.y.npc = 1, size = 3)
+p1
+ggsave(plot = p1,paste0(File,"Baso.pdf"), width = 3.65, height = 5.21)#4.52_530,4.17_400,3.96_380,4.48-430
+dev.off()
+data$LMR <- data$lym / data$mon
+p2 <- ggplot(data, aes(x = log(LMR), y = ESCCseeker, color = Group)) + 
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, aes(fill = Group)) +
+  labs(x = "log(LMR)", 
+       y = "ESCCseeker score",
+       title = "A") +
+  theme_bw() +
+  theme(legend.position = "bottom",panel.grid = element_blank()) +
+  stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), 
+           label.x.npc = "left", label.y.npc = "top", size = 3)
+p2  
+# 拟合包含所有协变量的模型
+#model_adj <- lm(ESCCseeker ~ lym + mon + age + sex + Group, data = data)
+model_adj <- lm(ESCCseeker ~ lym + mon +Group, data = data)
+
+# 计算部分残差（针对 lym_pct）
+data$partial_res_lym <- residuals(model_adj) + coef(model_adj)["lym"] * data$lym
+
+p_partial <- ggplot(data, aes(x = lym, y = partial_res_lym, color = Group)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "Lymphocyte percentage (%)", 
+       y = "Partial residual for ESCCseeker (adjusted for other variables)",
+       title = "Partial Residual Plot") +
+  theme_minimal() +
+  stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), 
+           label.x.npc = "left", label.y.npc = "top", size = 3)
+p_partial
+p_violin <- ggplot(data, aes(x = Group, y = lym, fill = Group)) +
+  geom_violin(alpha = 0.6) +
+  geom_boxplot(width = 0.2, fill = "white") +
+  labs(y = "Lymphocyte percentage (%)") +
+  stat_compare_means(method = "wilcox.test", label = "p.format") +
+  theme_minimal()
+p_violin
+##2.mon
+data$partial_res_mon <- residuals(model_adj) + coef(model_adj)["mon"] * data$mon
+
+p_partial <- ggplot(data, aes(x = mon, y = partial_res_mon, color = Group)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "Monocyte percentage (%)", 
+       y = "Partial residual for ESCCseeker (adjusted for other variables)",
+       title = "Partial Residual Plot") +
+  theme_minimal() +
+  stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), 
+           label.x.npc = "left", label.y.npc = "top", size = 3)
+p_partial
+p_violin <- ggplot(data, aes(x = Group, y = mon, fill = Group)) +
+  geom_violin(alpha = 0.6) +
+  geom_boxplot(width = 0.2, fill = "white") +
+  labs(y = "Monocyte percentage (%)") +
+  stat_compare_means(method = "wilcox.test", label = "p.format") +
+  theme_minimal()
+p_violin
+library(forestplot)
+model_full <- lm(ESCCseeker ~ lym + mon, data = data)
+coef_table <- tidy(model_full, conf.int = TRUE)
+
+# 查看结果
+print(coef_table)
+
+# 根据需要筛选出您想展示的变量（比如 lym_pct, mon_pct, LMR, GroupESCC）
+plot_data <- coef_table %>%
+  filter(term %in% c("lym", "mon","GroupESCC")) %>%
+  dplyr::mutate(variable = dplyr::recode(term,
+                           "lym" = "Lymphocyte%",
+                           "mon" = "Monocyte%",
+                           "LMR" = "LMR",
+                           "GroupESCC" = "Group (ESCC)")) %>%
+  dplyr::select(variable, estimate, conf.low, conf.high) %>%
+  rename(beta = estimate, lower = conf.low, upper = conf.high)
+
+forestplot(plot_data$variable,
+           mean = plot_data$beta,
+           lower = plot_data$lower,
+           upper = plot_data$upper,
+           xlab = "Standardized β (95% CI)",
+           txt_gp = fpTxtGp(label = gpar(cex = 0.8)))
+# ②. 细胞成分单多因素===========================
+library(forestplot)
+library(dplyr)
+#2模型单变量多变量逻辑回归####
+df=data[,c(2,5:10)]#7,6,
+library(tidyverse)
+library(qvalue)  # FDR校正
+library(car)     # 共线性诊断
+library(broom)  # 加载broom包
+library(dplyr)
+var=colnames(df)[c(2:7)]
+data_zscaled <- mutate(df, across(all_of(var), ~ scale(.x)))
+# 单变量逻辑回归
+univariate_results <- map_dfr(var, ~{
+  model <- lm(
+    formula = as.formula(paste("ESCCseeker ~", .x)),
+    data = data_zscaled)
+  tidy(model) %>% filter(term == .x) %>% 
+    mutate(variable = .x,OR = exp(estimate),
+           OR_95CI = sprintf("%.2f (%.2f-%.2f)", 
+                             exp(estimate),exp(estimate - 1.96*std.error),
+                             exp(estimate + 1.96*std.error)))})
+
+# 使用p.adjust进行BH校正（自动跳过NA/Inf值）
+univariate_results$FDR <- p.adjust(univariate_results$p.value, method = "BH")
+library(broom)
+library(forestplot)
+library(dplyr)
+# 确保数据格式正确
+# 准备单因素数据
+univariate_forest <- univariate_results %>%
+  mutate(analysis = "Univariate",
+         OR = exp(estimate),
+         lower = exp(estimate - 1.96 * std.error),
+         upper = exp(estimate + 1.96 * std.error),p_format = 
+           ifelse(p.value < 0.001,formatC(p.value, format = "e", digits = 2),sprintf("%.2f", p.value)),
+         FDR=ifelse(FDR < 0.001,formatC(FDR, format = "e", digits = 2),sprintf("%.2f", FDR))
+  ) %>%dplyr::select(variable, analysis, OR, lower, upper, p_format, estimate, std.error,FDR)
+
+univariate_forest$variable=factor(univariate_forest$variable,c( "neu","lym","eos","baso","mon","NLR"),labels = c("neutrophil", "lymphocyte", "eosinophil", "basophil", "monocyte","NLR"))
+univariate_forest=arrange(univariate_forest,variable)
+# 创建标签文本 - 每个变量有两行：单因素和多因素
+variables <- unique(univariate_forest$variable)
+labeltext <- matrix(nrow = length(variables)*1+1, ncol = 4)
+labeltext[1,] <- c("Variable", "OR (95% CI)", "P value", "FDR")
+labeltext[2:nrow(labeltext),]=as.matrix(mutate(univariate_forest,
+                                               OR_95CI =sprintf("%.2f (%.2f-%.2f)",
+                                                                exp(estimate),
+                                                                exp(estimate - 1.96*std.error),
+                                                                exp(estimate + 1.96*std.error))))[,c(1,10,6,9)]
+##OR图
+ggplot(univariate_forest, aes(x=OR,y = variable)) +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), width = 0.45,linewidth=0.35) +  # 添加水平误差线
+  geom_point(shape=15,color="#0055A5",fill = "#0055A5",size = 4.5) +  # 添加点
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey") +
+  #scale_shape_manual(values = c("Univariate" = 15, "Multivariate" = 15)) +
+  scale_x_continuous(trans = "log",breaks = c(5,15,25,30))+
+  #scale_color_manual(values =c("Univariate" = "#0055A5", "Multivariate" = "#B90019")) +
+  #scale_fill_manual(values = c("Univariate" = "#0055A5", "Multivariate" = "#B90019"))+
+  #facet_wrap(~variable,ncol = 1,strip.position="left",dir="v")+
+  theme(#plot.margin = unit(c(1, 1, 0.5, 0.5), "lines"),
+    #strip.placement = "outside",  # 将分面标签放在面板外部
+    #strip.background = element_blank(),  # 去掉分面标签的背景
+    axis.text.y = element_blank(),
+    axis.ticks.y= element_blank(),
+    strip.text.y = element_text(size = 5,face = "bold",angle = 0),
+    legend.position = "top",
+    legend.direction = "horizontal",
+    legend.text = element_text(angle = 0),  # 确保图例文本水平
+    legend.title = element_text(angle = 0),
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(), 
+    axis.ticks = element_line(color = "black", linewidth = 1),
+    panel.grid.minor = element_blank())
+ggsave(paste0(File,"细胞成分单多因素分析.pdf"), width = 5.21, height = 2.6)#150_2.6,300_5.21
+dev.off()
+
+#输出表格
+library(kableExtra)
+library(dplyr)
+df <- as.data.frame(labeltext[-1,], stringsAsFactors = FALSE)
+colnames(df) <- c("Variable",  "OR_CI","P value", "FDR")
+# 创建表格
+df <- df %>%
+  kbl(align = "l", 
+      col.names = c("Variable", "OR (95% CI)","P value",  "FDR"),
+      caption = "单因素分析") %>%
+  kable_classic(full_width = FALSE, font_size = 12, html_font = "Times New Roman") %>%
+  row_spec(0, bold = TRUE)  # 表头加粗
+df
+# ①. 匹配后看位点是否有差异===========================
+gene=c("cg03396260", "cg05914150", "cg07475126", "cg17968322", "cg18657707", 
+       "cg19572487", "cg20184330", "cg20381728", "cg22823192")
+trr=read_excel("D:/ESCC/芯片图谱/中文/S/ESCC1217.xlsx", sheet = 2)         # 指定工作表索引[^69^]
+trr <- column_to_rownames(trr,var = "id")
+trr=trr[trr$gg=="yes",-1]
+da=trr[rownames(trr)%in%rownames(matched_data),c("group",gene)]##甲基化
+da$group=factor(ifelse(da$group=="ESCC",1,0))
+out=data.frame()
+for (h in 2:ncol(da)) {
+  pre=as.numeric(da[,h])
+  id=colnames(da)[h]
+  rt=data.frame(expression=pre,group=da$group)
+  wilcoxTest<-t.test(expression~group,data=rt)
+  pvalue=wilcoxTest$p.value
+  conGeneMeans=round(mean(da[da$group==0,h]),5)
+  treatGeneMeans=round(mean(da[da$group==1,h]),5)
+  dif=round(treatGeneMeans-conGeneMeans,4)
+  pred<- prediction(predictions =rt$expression, # 预测指标
+                    labels =rt$group ) # 此时就是计算癌症的AUC
+  AUC=ifelse(performance(pred, "auc")@y.values[[1]]>0.5,round(performance(pred, "auc")@y.values[[1]],3),round(1-performance(pred, "auc")@y.values[[1]],3))
+  out=rbind(out,cbind(id=id,ControlMean=conGeneMeans,ESCCMean=treatGeneMeans,AUC=AUC,dif=dif,pValue=pvalue))
+}
+out$pValue=as.numeric(out$pValue)
+out$q=p.adjust(out$pValue,"BH")
+out$q=ifelse(out$q < 0.001,formatC(out$q, format = "e", digits = 2),sprintf("%.4f", out$q))
+out$pValue=ifelse(out$pValue < 0.001,formatC(out$pValue, format = "e", digits = 2),sprintf("%.4f", out$pValue))
+list=list(matched_data=matched_data,DMPs=out)
+library(openxlsx)
+write.xlsx(list,"match_CRM.xlsx")
+#
+#GO,KEGG,GSEA分析####
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(ggplot2)
+library(openxlsx)
+library(pathview)
+library(GseaVis)
+library(msigdbr) 
+genellist1 <- bitr(c("MIDEAS","PIK3R1","ELF1"), fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+kk <- enrichKEGG(gene = genellist1$ENTREZID,keyType = "ncbi-geneid",organism = "hsa",pvalueCutoff = 1,qvalueCutoff = 1) #### 富集分析
+go=enrichGO(gene = genellist1$ENTREZID,keyType = "ENTREZID",OrgDb = 'org.Hs.eg.db',ont = "ALL", pAdjustMethod = "BH",pvalueCutoff = 1,qvalueCutoff = 1,readable = FALSE) ##### GO富集分析
+#三、赢家诅咒-收缩值=========================
+#BiocManager::install("geneLenDataBase")
+#install.packages("BiasedUrn")
+#install.packages("D:/文献/文章/geneLenDataBase_1.48.0.tar.gz")
+library(ChAMP)
+library(readxl)
+library(limma)
+library(tidyverse)
+library(data.table)
+# 读取时只保留1-73列
+df <- fread("D:/原始数据/JZ202407251105-3_935k_食管癌反卷积分析/NormBeta_BMIQ.csv", select = 1:73)
+df <- column_to_rownames(df,var = "probeID")
+# ①. 芯片==========================
+# 假设你的甲基化数据矩阵为 beta_matrix，行是 CpG，列是样本
+# 假设分组向量 group，对照 = 0，病例 = 1（或任意两个水平）
+#beta_matrix <- read_excel("D:/ESCC/match_CRM.xlsx", sheet = "shrink1") %>%tibble::column_to_rownames(var = "probeID") %>%as.matrix()
+#beta_matrix <- as.matrix(read.csv("D:/原始数据/JZ202407251105-3_935k_食管癌反卷积分析/NormBeta_BMIQ.csv", row.names = 1))
+group=rep(c(1,0),times=c(42,30))
+# 1. 构建设计矩阵
+design <- model.matrix(~ group)  # 会自动将 group 转换为数值0/1
+# 2. 拟合线性模型
+fit <- lmFit(df, design)
+# 3. 提取病例 vs 对照的系数标准误
+# 系数名称通常是 "group1" 或 "groupcase"，取决于你的分组命名
+# 可以用 colnames(fit$coefficients) 查看
+se <- fit$stdev.unscaled[, "group"] * fit$sigma  # group1 是你要比较的那一列
+# 或者更安全的方式，通过对比矩阵提取
+# 如果你用了 ~0+group 的设计，则需使用 makeContrasts
+#remotes::install_github("amandaforde/winnerscurse")
+library(winnerscurse)
+# 经验贝叶斯校正
+input_df=read_excel("D:/ESCC/match_CRM.xlsx", sheet = "shrink2")
+# 在 input_df 中添加新列 se
+input_df$se <- se[match(input_df$probeID, names(se))]
+colnames(input_df)=c("rsid","beta","se")
+# winnerscurse 包的 empirical_bayes 函数本身没有设置随机种子的参数
+set.seed(123)
+corrected_df <- empirical_bayes(summary_data = input_df)
+# 查看校正结果的前几行
+head(corrected_df)
+File="D:/ESCC/芯片图谱/中文/S/CRM_revise/"
+write.csv(corrected_df,paste0(File,"收缩估计值all芯片.csv"))
+T48=names(readxl::read_excel("D:/ESCC/芯片图谱/中文/S/ESCC1217.xlsx", sheet = 2, n_max = 0))[9:56]
+T48_corrected <- corrected_df[corrected_df$rsid %in% T48, ]
+write.csv(T48_corrected,paste0(File,"收缩估计值T48芯片.csv"))
+### ... PCA==========================
+df <- fread("D:/原始数据/JZ202407251105-3_935k_食管癌反卷积分析/NormBeta_BMIQ.csv", select = 1:73)
+df <- column_to_rownames(df,var = "probeID")
+
+library(ggbiplot)#"#ED1664","#8FACDD"
+a=read.csv(paste0(File,"PCA.csv"),row.names = 1)
+a=t(a)
+df=scale(t(df))
+df=t(df)
+data.class=as.factor(c(rep("EC",42),rep("NC",30)))##因子型变量
+data.pca <- prcomp(df, scale. = TRUE,center = T)
+data.pca[["x"]][,c(1,2)]=a[,1:2]
+# 可视化
+pca_data <- as.data.frame(data.pca$x[, 1:2])
+colnames(pca_data) <- c("PC1", "PC2")
+pca_data$group <- data.class
+
+# 计算椭圆
+library(ggplot2)
+library(ggpubr)
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = group)) +
+  geom_point(size = 3) +
+  #stat_ellipse(level = 0.85, linetype = "dashed") +
+  scale_color_manual(values = c("#ED1664", "#4576C3")) +
+  labs(x ="PC1 (20.67%)",
+       y ="PC2 (7.65%)")  +
+  theme_bw() +
+  theme(legend.position = 'top',
+        panel.grid = element_blank())
+ggsave(paste0(File,"pca.pdf"),width = 5.67, height = 5.31)
+dev.off()
+ggbiplot(data.pca, # PCA结果 
+         choices = c(1,2), # 主成分选择 
+         obs.scale = 1, # 标准化观测值 
+         var.scale = 1, # 标准化变量 
+         var.axes = F, #为变量画箭头 
+         groups = data.class,  
+         ellipse = TRUE, # 置信椭圆 
+         ellipse.prob = 0.85, # 置信区间，默认0.68 ,0.95，调圈大小
+         circle = F) + # 画相关圈(仅适用于当scale = TRUE和var.scale = 1时调用prcomp) 
+  scale_color_manual(values = c("#ED1664","#8FACDD"))+ 
+  theme_bw() + 
+  theme(legend.direction = 'horizontal',  
+        legend.position = 'top', 
+        legend.text = element_text(size = 8), 
+        legend.title = element_text(size = 10))
+ggsave(paste0(File,"pca.pdf"),width = 5.67, height = 5.31)
+# ②. TBS=========================
+trr=read_excel("D:/ESCC/芯片图谱/中文/S/ESCC1217.xlsx", sheet = 2)         # 指定工作表索引[^69^]
+trr <- column_to_rownames(trr,var = "id")
+trr=trr[trr$gg=="yes",-1]
+group=ifelse(trr$group=="ESCC",1,0)
+trr$group=factor(ifelse(trr$group=="ESCC",1,0))
+out=data.frame()
+for (h in 7:ncol(trr)) {
+  pre=as.numeric(trr[,h])
+  id=colnames(trr)[h]
+  rt=data.frame(expression=pre,group=trr$group)
+  wilcoxTest<-t.test(expression~group,data=rt)
+  pvalue=wilcoxTest$p.value
+  conGeneMeans=mean(trr[trr$group==0,h])
+  treatGeneMeans=mean(trr[trr$group==1,h])
+  dif=as.numeric(treatGeneMeans-conGeneMeans)
+  out=rbind(out,cbind(id=id,conMean=conGeneMeans,treatMean=treatGeneMeans,dif=dif,pValue=pvalue))
+}
+out$q=p.adjust(out$pValue,"BH")
+design <- model.matrix(~ group)  # 会自动将 group 转换为数值0/1
+df=as.data.frame(t(trr[,7:54]))
+fit <- lmFit(df, design)
+se <- fit$stdev.unscaled[, "group"] * fit$sigma  # group1 是你要比较的那一列
+library(winnerscurse)
+# 经验贝叶斯校正
+input_df=out[,c(1,4)]
+input_df$se <- se[match(input_df$id, names(se))]
+input_df$dif=as.numeric(input_df$dif)
+colnames(input_df)=c("rsid","beta","se")
+input_df=rbind(input_df,input_df)
+input_df$rsid[49:96]=paste0("cg",1:48)
+# winnerscurse 包的 empirical_bayes 函数本身没有设置随机种子的参数
+set.seed(123)
+corrected_df <- empirical_bayes(summary_data = input_df )
+head(corrected_df)
+T48=names(readxl::read_excel("D:/ESCC/芯片图谱/中文/S/ESCC1217.xlsx", sheet = 2, n_max = 0))[9:56]
+T48_corrected <- corrected_df[corrected_df$rsid %in% T48, ]
+write.csv(T48_corrected,paste0(File,"收缩估计值T48TBS.csv"))
+#四、亚组分析批次=========================
+###①亚组表格####
+cutoffs=c(ESCCseeker = yd_cutoff, CEA = 5, SCC=2.7,CYR = 3.3,TMcombine=0)
+yp=rbind(yp1,yp2,yp3)
+yp$gg=factor(rep(c("Training set","Test set","Verification set"),times=c(nrow(yp1),nrow(yp2),nrow(yp3))),levels = c("Training set","Test set","Verification set"))
+#yp$gg=factor("all")
+#yp$cohort=rep(c("Training set","Test set","Validation set"),times=c(nrow(yp1),nrow(yp2),nrow(yp3)))
+yp=yp[yp$class!="HGIN",]
+yp$class=factor(yp$class,levels = c("Control","ESCC"))
+yp$group=as.numeric(yp$class)-1
+
+a1=a2[rownames(yp),]
+a <- read_excel("D:/ESCC/芯片图谱/中文/S/ESCC1217.xlsx", sheet = "sub")  
+sen=data.frame()  
+spe=data.frame()
+auc=data.frame()
+accu=data.frame()
+cutoff=yd_cutoff
+data1=data.frame(sample=rownames(a1),gg=yp$gg,pre=yp$pre,CEA=a1$CEA,SCC=a1$SCC,CYR=a1$CYR,class=yp$class)
+yp=left_join(data1,a,by="sample")
+yp=yp[,-c(1,8,23)]
+df_long <- pivot_longer(yp, cols = c(6:20), names_to = "key", values_to = "value")
+df_sorted <- df_long %>%
+  arrange(key, value)
+df_clean <- df_sorted[complete.cases(df_sorted), ]
+df_clean$key <- factor(df_clean$key, levels = c("class" ,"stage","T stage","N stage","LN","MI","position","differentiation" ,"size" ,"age","gender","BMI" ,"smoke","drink" ,"family"), ordered = TRUE)
+df_clean$value <- factor(df_clean$value, levels = c("Control","ESCC" ,"1","2","3","4", "T1","T2","T3","N0","N1","N2","LN(-)",  "LN(+)", "MI(-)" , "MI(+)","Upper", "Middle" ,"Lower","M/W",  "P/Not" ,"≤3cm",">3cm"  ,"<60","≥60" , "Female","Male","BMI<18" , "18≤BMI≤24","BMI>24" ,"Without smoking","With smoking" ,"Without drinking history" ,"With drinking history","Without family history" ,"With family history" ), ordered = TRUE)
+df_clean=subset(df_clean,df_clean$key%in%c("class" ,"stage","T stage","LN","MI","position","differentiation" ,"size" ))
+df_clean$key<- droplevels(df_clean$key)
+df_clean$value<- droplevels(df_clean$value)
+to=data.frame()
+for (ii in 1:4) {
+  da=df_clean[,c(1,(ii+1),6:7)]
+  colnames(da)[2]="predictor"
+  cutoff=cutoffs[ii]
+  ii=names(cutoffs)[[ii]]
+  for (h in levels(da$gg)) {
+    df=da[da$gg==h,-1]
+    for (i in levels(df$value)[-(1)]) {
+      if (!any(df$value == i)) next
+      data=df[df$value%in%c(i,"Control"),]
+      colnames(data)=c("predictor","type","class")
+      data$class=ifelse(data$class=="Control",0,1)
+      set.seed(225)
+      pred_class <- ifelse(data$predictor  >  cutoff, 1, 0)  # 预测分类
+      tp <- sum(data$class == 1 & pred_class == 1)  # 真阳性
+      fp <- sum(data$class == 0 & pred_class == 1)  # 假阳性
+      fn <- sum(data$class == 1 & pred_class == 0)  # 假阴性
+      tn <- sum(data$class == 0 & pred_class == 0)  # 真阴性
+      a=tp + fn
+      current_sens <-pmax(0, pmin(1, agresti_coull_ci(tp , a)))  # 灵敏度
+      a=tn + fp
+      current_spec <- pmax(0, pmin(1, agresti_coull_ci(tn , a)))  # 特异度
+      a=tn + tp
+      current_accu <- pmax(0, pmin(1, agresti_coull_ci(a , nrow(data))))  # 特异度
+      roc <- roc(class ~ predictor, data,direction = "<")
+      AUC=as.numeric(round(ci(roc),3))
+      data=arrange(data,desc(type))
+      sen <- rbind(sen, cbind(gg=h,type=data[1,2],class=i, lower = current_sens[2],upper = current_sens[3],current = current_sens[1]))
+      spe <- rbind(spe, cbind(gg=h,type=data[1,2],class=i, lower = current_spec[2],upper = current_spec[3],current = current_spec[1]))
+      accu<- rbind(accu, cbind(gg=h,type=data[1,2],class=i, lower = current_accu[2],upper = current_accu[3],current = current_accu[1]))
+      auc <- rbind(auc, cbind(gg=h,type=data[1,2],class=i,lower = AUC[1],upper = AUC[3],current = AUC[2]))
+      AUC=paste0(AUC[2],"(",AUC[1],"-",AUC[3],")")
+      Sen =paste0(round(current_sens[1],4)*100,"(",round(current_sens[2],4)*100,"-",round(current_sens[3],4)*100,")")
+      Spe =paste0(round(current_spec[1],4)*100,"(",round(current_spec[2],4)*100,"-",round(current_spec[3],4)*100,")")
+      Accu =paste0(round(current_accu[1],4)*100,"(",round(current_accu[2],4)*100,"-",round(current_accu[3],4)*100,")")
+      n=sum(data$class==1)
+      to=rbind(to,cbind(gg=h,panel=ii,type=data[1,2],i=i,n=n,AUC = AUC,Sen=Sen,Spe=Spe,Accu=Accu))
+    }
+  }
+}
+
+colnames(to)=c("cohort","Panel","type","class","n","AUC(95% CI)","Sensitivity(95% CI),%","Specificity(95% CI),%","Accuracy(95% CI),%")
+to=pivot_wider(to,names_from = c(1),values_from = c(5:9))
+to=to[,c(1:4,7,10,13,16,5,8,11,14,17,6,9,12,15,18)]
+to=dplyr::arrange(to,type,class)
+colnames(to)=c("","","","n","AUC(95% CI)","Sensitivity(95% CI),%","Specificity(95% CI),%","Accuracy(95% CI),%","n","AUC(95% CI)","Sensitivity(95% CI),%","Specificity(95% CI),%","Accuracy(95% CI),%","n","AUC(95% CI)","Sensitivity(95% CI),%","Specificity(95% CI),%","Accuracy(95% CI),%")
+write.csv(to,paste0(File,"tableS4.csv"))
+## ② 性别年龄==========================
+yp=rbind(yp1,yp2,yp3)
+yp$gg=factor(rep(c("Training set","Test set","Validation set"),times=c(nrow(yp1),nrow(yp2),nrow(yp3))),levels = c("Training set","Test set","Validation set"))
+yp=yp[yp$class!="HGIN",]
+yp$class=factor(yp$class,levels = c("Control","ESCC"))
+a1=a2[match(rownames(yp),rownames(a2)),]
+#h=ifelse(a1$sex<=5&a1$SCC<=2.7&a1$CYR<=3.3,"-","+")
+data1=data.frame(gg=yp$gg,sample=rownames(yp),class=yp$class,Model=yp$pre,CEA=a1$CEA,SCC=a1$SCC,CYR=a1$CYR,sex=ifelse(a1$sex==1,"Male","Female"),age=ifelse(a1$age<=60,"<60",">60"))
+#data1$group=factor(ifelse(data1$class=="Control",0,1),levels = c(0,1))
+yp=pivot_longer(data1,cols = 8:9,names_to = "type",values_to = "value")
+yp$value=factor(yp$value,levels = c("<60", ">60", "Female", "Male"))
+yp$class=ifelse(yp$class=="ESCC",1,0)
+sen=data.frame()  
+spe=data.frame()
+auc=data.frame()
+accu=data.frame()
+##
+off=c(ESCCseeker=0.5,CEA=5,SCC=2.7,CYR=3.3)
+to=data.frame()
+for (ii in 1:4) {
+  df=yp[,c(1,ii+3,9,3)]
+  cutoff=off[ii]
+  panel=names(off)[ii]
+  for (h in levels(df$gg)) {
+    da=df[df$gg==h,-1]
+    for (i in levels(da$value)) {
+    data=da[da$value==i,]
+    colnames(data)=c("predictor","type","class")
+    data$class=ifelse(data$class==0,0,1)
+    set.seed(225)
+    cutoff=cutoff
+    pred_class <- ifelse(data$predictor  >=  cutoff, 1, 0)  # 预测分类
+    tp <- sum(data$class == 1 & pred_class == 1)  # 真阳性
+    fp <- sum(data$class == 0 & pred_class == 1)  # 假阳性
+    fn <- sum(data$class == 1 & pred_class == 0)  # 假阴性
+    tn <- sum(data$class == 0 & pred_class == 0)  # 真阴性
+    a=tp + fn
+    current_sens <-pmax(0, pmin(1, agresti_coull_ci(tp , a)))  # 灵敏度
+    a=tn + fp
+    current_spec <- pmax(0, pmin(1, agresti_coull_ci(tn , a)))  # 特异度
+    a=tn + tp
+    current_accu <- pmax(0, pmin(1, agresti_coull_ci(a , nrow(data))))  # 特异度
+    roc <- roc(class ~ predictor, data,direction = "<")
+    AUC=as.numeric(round(ci(roc),3))
+    sen <- rbind(sen, cbind(type=data[1,2],class=i, lower = current_sens[2],upper = current_sens[3],current = current_sens[1],panel=panel))
+    spe <- rbind(spe, cbind(type=data[1,2],class=i, lower = current_spec[2],upper = current_spec[3],current = current_spec[1],panel=panel))
+    accu<- rbind(accu, cbind(type=data[1,2],class=i, lower = current_accu[2],upper = current_accu[3],current = current_accu[1],panel=panel))
+    auc <- rbind(auc, cbind(type=data[1,2],class=i,lower = AUC[1],upper = AUC[3],current = AUC[2],panel=panel))
+    AUC=paste0(AUC[2],"(",AUC[1],"-",AUC[3],")")
+    Sen =paste0(round(current_sens[1],4)*100,"(",round(current_sens[2],4)*100,"-",round(current_sens[3],4)*100,")")
+    Spe =paste0(round(current_spec[1],4)*100,"(",round(current_spec[2],4)*100,"-",round(current_spec[3],4)*100,")")
+    Accu =paste0(round(current_accu[1],4)*100,"(",round(current_accu[2],4)*100,"-",round(current_accu[3],4)*100,")")
+    c=sum(data$class==1)
+    n=sum(data$class==0)
+    to=rbind(to,cbind(cohort=h,i=i,cancer=c,normal=n,AUC = AUC,Sen=Sen,Spe=Spe,Accu=Accu,panel=panel))
+  }
+  }
+}
+colnames(to)=c("cohort","type","cancer.n","normal.n","AUC(95% CI)","Sensitivity(95% CI),%","Specificity(95% CI),%","Accuracy(95% CI),%","Panel")
+to=pivot_wider(to,names_from = c(1),values_from = c(3:8))
+to=dplyr::arrange(to,type)
+write.csv(to,paste0(File,"Table_agesex.csv"))
+#五、加入纯甲基化=========================
+gene=c("cg03396260", "cg05914150", "cg07475126", "cg17968322", "cg18657707", 
+       "cg19572487", "cg20184330", "cg20381728", "cg22823192")
+a<- read_excel("D:/ESCC/芯片图谱/中文/S/ESCC1217.xlsx", sheet = 1)         # 指定工作表索引[^69^]
+a <- column_to_rownames(a,var = "id")
+train=a[a$gg=="train",c("group",gene)]##甲基化
+test=a[a$gg=="test",c("group",gene)]##甲基化
+wai=a[a$gg=="wai",c("group",gene)]##甲基化
+qz=a[a$gg=="qz",c("group",gene)]##甲基化
+oc=a[a$gg=="OC",c("group",gene)]##甲基化
+train$group=ifelse(train$group%in%c("ESCC","HGIN"),1,0)
+trainy=train$group
+trainx=as.matrix(train[,-1])
+trainy=train$group
+trainy=ifelse(trainy==1,"T","N")
+set.seed(i)#i=120
+cntrl = trainControl(
+  method = "cv",
+  number = 5,
+  verboseIter = F,
+  search = "random"
+)
+set.seed(120)
+# 进行参数调节要求准确率高支持向量少，Kappa为一致性参数评估分类效果，sigma,C取值决定模型优劣
+tuned_model = train(
+  x = trainx,
+  y = trainy,
+  trControl = cntrl,
+  method = "xgbTree")
+params <- as.list(tuned_model$bestTune[-1]) # 假设第一列是nrounds
+nrounds <- tuned_model$bestTune[[1]]
+trainy <- ifelse(trainy == "T", 1, 0)
+xgb <- xgboost(data = trainx, label = trainy, nrounds = nrounds, params = params, objective = "binary:logistic")
+y_predicted.train <- predict(xgb, trainx)
+yp1=data.frame(class=trainy,M9=y_predicted.train)
+rownames(yp1)=rownames(train)
+testx=as.matrix(test[,-1])
+testy=ifelse(test$group=="ESCC",2,ifelse(test$group=="HGIN",1,ifelse(test$group=="BD",0,0)))
+waiy=ifelse(wai$group=="ESCC",2,ifelse(wai$group=="HGIN",1,ifelse(wai$group=="BD",0,0)))
+waix=as.matrix(wai[,-1])
+y_predicted.test <- predict(xgb, testx)
+yp2=data.frame(class=testy,M9=y_predicted.test)
+rownames(yp2)=rownames(test)
+y_predicted.wai <- predict(xgb, waix)
+yp3=data.frame(class=waiy,M9=y_predicted.wai)
+rownames(yp3)=rownames(wai)
+##三维
+gene1=c("sex", "age", "SCC", "CYR", "cg03396260", "cg05914150", "cg07475126","cg17968322", "cg19572487", "cg20184330", "cg20381728", "cg22823192")
+train=a[a$gg=="train",c("group",gene1)]##三维
+test=a[a$gg=="test",c("group",gene1)]##三维
+wai=a[a$gg=="wai",c("group",gene1)]##三维
+qz=a[a$gg=="qz",c("group",gene1)]##三维
+oc=a[a$gg=="oc",c("group",gene1)]##三维
+trainx=as.matrix(train[,-1])
+trainy=train[,1]
+testx=as.matrix(test[,-1])
+testy=test[,1]
+waix=as.matrix(wai[,-1])
+waiy=wai[,1]
+trainy=train$group
+trainy=ifelse(trainy=="ESCC","T","N")
+set.seed(16)#455
+cntrl = trainControl(
+  method = "cv",
+  number = 5,
+  verboseIter = F,
+  search = "random"
+)
+set.seed(16)
+# 进行参数调节要求准确率高支持向量少，Kappa为一致性参数评估分类效果，sigma,C取值决定模型优劣
+tuned_model = train(
+  x = trainx,
+  y = trainy,
+  trControl = cntrl,
+  method = "xgbTree")
+params <- as.list(tuned_model$bestTune[-1]) # 假设第一列是nrounds
+nrounds <- tuned_model$bestTune[[1]]
+trainy <- ifelse(trainy == "T", 1, 0)
+xgb <- xgboost(data = trainx, label = trainy, nrounds = nrounds, params = params, objective = "binary:logistic")
+testx=as.matrix(test[,-1])
+y_predicted.train <- predict(xgb, trainx) 
+yp1$pre=y_predicted.train
+roc1<-roc(class~pre,yp1)
+trcutoff=data.frame(sensitivity=roc1[[2]],specificity=roc1[[3]],cutoff=roc1[[4]])
+yd_cutoff <- round(as.numeric(coords(roc1, "best", ret = "threshold")),2)
+y_predicted.test <- predict(xgb, testx)
+yp2$pre=y_predicted.test
+####
+y_predicted.wai <- predict(xgb, waix)
+yp3$pre=y_predicted.wai
+###①ROC曲线####
+a2 <- read_excel("D:/ESCC/芯片图谱/中文/S/ESCC1217.xlsx", sheet = 3)         # 指定工作表索引[^69^]
+a2 <- a2 %>%
+  tibble::column_to_rownames(var = "id")
+df=yp3#Wai
+a1=a2[rownames(wai),]
+df=yp2#Test
+a1=a2[rownames(test),]
+df=yp1#train
+a1=a2[rownames(train),]
+
+h=ifelse(a1$CEA<=5&a1$SCC<=2.7&a1$CYR<=3.3,0,1)
+yp=data.frame(group=df$class,pre=df$pre,M9=df$M9,CEA=a1$CEA,SCC=a1$SCC,CYR=a1$CYR,TMcombine=h,XG=df$class)
+#yp$group=factor(yp$group,levels =c("Control","HGIN","ESCC") )
+#yp$group=as.numeric(yp$group)-1
+yp$class=ifelse(yp$group==0,0,1)
+##健康和ESCC&HGIN
+roc0<-roc(class~M9,yp,direction = "<")
+roc1<-roc(class~pre,yp,direction = "<")
+roc2<-roc(class~CEA,yp,direction = "<")
+roc3<-roc(class~SCC,yp,direction = "<")
+roc4<-roc(class~CYR,yp,direction = "<")
+##健康和HGIN
+roc0<-roc(group~M9,yp[yp$group!=2,],direction = "<")
+roc1<-roc(group~pre,yp[yp$group!=2,],direction = "<")
+roc2<-roc(group~CEA,yp[yp$group!=2,],direction = "<")
+roc3<-roc(group~SCC,yp[yp$group!=2,],direction = "<")
+roc4<-roc(group~CYR,yp[yp$group!=2,],direction = "<")
+##健康和ESCC
+roc0<-roc(group~M9,yp[yp$group!=1,],direction = "<")
+roc1<-roc(group~pre,yp[yp$group!=1,],direction = "<")
+roc2<-roc(group~CEA,yp[yp$group!=1,],direction = "<")
+roc3<-roc(group~SCC,yp[yp$group!=1,],direction = "<")
+roc4<-roc(group~CYR,yp[yp$group!=1,],direction = "<")
+ci0=ci(roc0)
+ci1=ci(roc1)
+ci2=ci(roc2)
+ci3=ci(roc3)
+ci4=ci(roc4)
+#pdf(paste0(File,"Figure S3F_test.ROC.pdf"), width = 4.69, height = 4.69)  # 可以调整宽度和高度以适应您的图形
+pdf(paste0(File,"Figure S3G_wai.ROC.pdf"), width = 4.69, height = 4.69)  # 可以调整宽度和高度以适应您的图形
+plot(roc1, col = "#EF312C", main = "HGIN vs Control",lwd=1,lty=1,cex.lab = 1.2) # lasso rf LR SVM XG
+
+pdf(paste0(File,"Figure S3I_wai.ROC.pdf"), width = 4.69, height = 4.69)  # 可以调整宽度和高度以适应您的图形
+plot(roc1, col = "#EF312C", main = "ESCC/HGIN vs Control",lwd=1,lty=1,cex.lab = 1.2) # lasso rf LR SVM XG
+
+pdf(paste0(File,"Figure 3D_train.ROC.pdf"), width = 4.69, height = 4.69)  # 可以调整宽度和高度以适应您的图形
+pdf(paste0(File,"Figure 3G_test.ROC.pdf"), width = 4.69, height = 4.69)  # 可以调整宽度和高度以适应您的图形
+pdf(paste0(File,"Figure 3J_wai.ROC.pdf"), width = 4.69, height = 4.69)  # 可以调整宽度和高度以适应您的图形
+plot(roc1, col = "#EF312C", main = "ESCC vs Control",lwd=1,lty=1,cex.lab = 1.2) # lasso rf LR SVM XG
+lines(roc0, col = "#E39611",lwd=1,lty=1) 
+lines(roc2, col = "#3462AA",lwd=1,lty=1) 
+lines(roc3, col = "#9B3E88",lwd=1,lty=1) 
+lines(roc4, col = "#84C85A",lwd=1,lty=1) 
+legend("bottomright",
+       legend = c(paste0("ESCCseeker:", round(ci1[2], 3), paste0(";(", round(ci1[1],3), "-", round(ci1[3],3),")")), 
+                  paste0("M9:", round(ci0[2], 3), paste0(";(", round(ci0[1],3), "-", round(ci0[3],3),")")),
+                  paste0("CEA:", round(ci2[2], 3), paste0(";(", round(ci2[1],3), "-", round(ci2[3],3),")")),
+                  paste0("SCC:", round(ci3[2], 3), paste0(";(", round(ci3[1],3), "-", round(ci3[3],3),")")), 
+                  paste0("CYFRA21-1:", round(ci4[2], 3), paste0(";(", round(ci4[1],3), "-", round(ci4[3],3),")"))
+       ), 
+       col = c("#EF312C","#E39611","#3462AA","#9B3E88","#84C85A"), 
+       lty = 1, lwd=1,cex = 0.95,bty = "n") #n,o,r,l 
+dev.off()
+roc.test(roc1,roc0,method = "delong")
+###②表格AUC灵特####
+####
+a2 <- read_excel("D:/ESCC/芯片图谱/中文/S/ESCC1217.xlsx", sheet = 3) 
+a2 <- a2 %>%
+  tibble::column_to_rownames(var = "id")
+data=rbind(yp1,yp2,yp3)
+data$class=c(train$group,test$group,wai$group)
+data$cohort=rep(c("Training set","Test set","Validation set"),times=c(nrow(yp1),nrow(yp2),nrow(yp3)))
+data$class=factor(data$class,levels = c("Control","HGIN","ESCC"))
+data$group=as.numeric(data$class)-1
+a1=a2[match(rownames(data),rownames(a2)),c("CEA","SCC","CYR")]
+h=ifelse(a1$CEA<=5&a1$SCC<=2.7&a1$CYR<=3.3,0,1)
+yp=data.frame(cohort=data$cohort,class=data$class,group=data$group,ESCCseeker=data$pre,M9=data$M9,CEA=a1$CEA,SCC=a1$SCC,CYR=a1$CYR,TMcombine=h)
+da=yp[yp$cohort=="Validation set"&yp$class%in%c("ESCC","HGIN"),]
+da$class="ESCC/HGIN"
+da$group=1
+yp=rbind(yp,da)
+cutoffs=c(ESCCseeker = 0.5,M9=0.43, CEA = 5, SCC=2.7,CYR = 3.3,TMcombine=0)
+sen=data.frame()  
+spe=data.frame()
+auc=data.frame()
+to=data.frame()
+for (set in c("Training set","Test set","Validation set")) {
+  da=yp[yp$cohort==set,]
+  for (h in c("ESCC","HGIN","ESCC/HGIN")) {
+    if (sum(da$class==h)==0) next
+    data=da[da$class%in%c(h,"Control"),]
+    for (i in 4:9) {
+      data$predictor=data[,i]
+      cutoff=cutoffs[i-3]
+      ii=names(cutoffs)[i-3]
+      set.seed(225)
+      pred_class <- ifelse(data$predictor  >  cutoff, 1, 0)  # 预测分类
+      tp <- sum(data$group != 0 & pred_class == 1)  # 真阳性
+      fp <- sum(data$group == 0 & pred_class == 1)  # 假阳性
+      fn <- sum(data$group != 0 & pred_class == 0)  # 假阴性
+      tn <- sum(data$group == 0 & pred_class == 0)  # 真阴性
+      a=tp + fn
+      current_sens <-pmax(0, pmin(1, agresti_coull_ci(tp , a)))  # 灵敏度
+      a=tn + fp
+      current_spec <- pmax(0, pmin(1, agresti_coull_ci(tn , a)))  # 特异度
+      a=tn + tp
+      current_accu <- pmax(0, pmin(1, agresti_coull_ci(a , nrow(data)))) 
+      roc1 <- roc(group ~ predictor, data,direction = "<")
+      AUC <- as.numeric(round(ci(roc1),3))
+      AUC=paste0(AUC[2],"(",AUC[1],"-",AUC[3],")")
+      sen <- rbind(sen, cbind(cohort=set,group=h,Sensitivity=names(cutoffs)[i-3], lower = current_sens[2],upper = current_sens[3],current = current_sens[1]))
+      spe <- rbind(spe, cbind(cohort=set,group=h,Specificity=names(cutoffs)[i-3], lower = current_spec[2],upper = current_spec[3],current = current_spec[1]))
+      auc <- rbind(auc, cbind(cohort=set,group=h,AUC=names(cutoffs)[i-3],lower = AUC[1],upper = AUC[3],current = AUC[2]))
+      Sen =paste0(round(current_sens[1],4)*100,"(",round(current_sens[2],4)*100,"-",round(current_sens[3],4)*100,")")
+      Spe =paste0(round(current_spec[1],4)*100,"(",round(current_spec[2],4)*100,"-",round(current_spec[3],4)*100,")")
+      Accu =paste0(round(current_accu[1],4)*100,"(",round(current_accu[2],4)*100,"-",round(current_accu[3],4)*100,")")
+      to=rbind(to,cbind(set=set,type=h,panel=ii,AUC = AUC,Sen=Sen,Spe=Spe,Accu=Accu))
+      }
+  }
+}
+#灵敏度绘图
+sen[,4:6]=apply(sen[,4:6],2,as.numeric)
+sen$lab=sprintf("%.2f%%", sen$current * 100)
+data=sen[sen$Sensitivity%in%c("ESCCseeker","M9","TMcombine"),]
+i=1
+da=data[(3*i+1):(3*i+3),]
+ggplot(da, aes(x = current, y = da[,3], color = Sensitivity)) +
+  geom_segment(aes(x = lower, xend = upper, yend = da[,3]), linetype = "solid",colour = "black") +#,colour = "black",,linewidth = 0.9
+  #geom_vline(xintercept = as.numeric(data[1,4]), linetype = "dashed",color = "gray") +#,, linewidth = 0.9,
+  geom_text(aes(label = lab,x=0.05,y=Sensitivity, color = Sensitivity),size = 5,hjust = 0.6, vjust = 0) + 
+  geom_point(size = 5.5,shape=15) +
+  scale_x_continuous(limits = c(0, 1.0), breaks = seq(0, 1.0, 0.2), labels = c("0.0","0.2","0.4", "0.6", "0.8", "1.0")) +
+  scale_color_manual(values = c( "ESCCseeker"="#B90019","M9" = "#EEA210","TMcombine" = "#0055A5")) +
+  labs(
+    title = paste(da[1,1],da[1,2]),#train test wai
+    x = colnames(data)[3],#"Sensitivity",Specificity,AUROC
+    y = "",
+    color = ""
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    axis.text.y = element_text(size = 10, hjust = 1),  # Y轴标签右对齐
+    axis.text.x = element_text(size = 14),
+    axis.title.x = element_text(size = 16),
+    legend.position = "none",#legend.position = "none"，c(0.3, 0.8)
+    legend.text = element_text(size = 14),
+    panel.grid.major.y = element_blank(),
+    axis.line = element_line(color = "black"),  # 设置坐标轴线的粗细
+    axis.ticks = element_line(color = "black"),
+  ) +
+  coord_flip() 
+ggsave(paste0(File,"Figure 3E_train.pdf"), width = 3.71, height = 4.21)#4.69_450,4.17_400,3.96_380,4.48-430
+ggsave(paste0(File,"Figure 3H_test.pdf"),width = 3.71, height = 4.21)#4.69_450,4.17_400,3.96_380,4.48-430
+ggsave(paste0(File,"Figure 3K_wai.pdf"), width = 3.71, height = 4.21)#4.69_450,4.17_400,3.96_380,4.48-430
+ggsave(paste0(File,"Figure S3H_wai.pdf"), width = 3.71, height = 4.21)#4.69_450,4.17_400,3.96_380,4.48-430
+ggsave(paste0(File,"Figure S3j_wai.pdf"), width = 3.71, height = 4.21)#4.69_450,4.17_400,3.96_380,4.48-430
+
+dev.off()
+
+#colnames(merged_df)=c("cohort","group","panel", "AUC(95% CI)","Sensitivity(95% CI),%", "Specificity(95% CI),%")
+write.csv(to,paste0(File,"tableS3.csv"))
+#write.csv(merged_df,paste0(File,"tableS2'.csv"))
+###③McNemar检验####
+# 完整诊断试验比较分析函数
+# 这是你需要的完整代码
+compare_diagnostic_tests <- function(d, y1, y2, test_names = c("Test1", "Test2")) {
+  library(DTComPair)
+  
+  # 1. 创建配对表
+  tab <- tab.paired(d, y1, y2, testnames = test_names)
+  
+  # 2. 计算基本指标
+  indiv <- acc.paired(tab)
+  
+  # 3. 灵敏度和特异度比较
+  sesp_comp <- sesp.mcnemar(tab)
+  sen_comp=sesp_comp$sensitivity
+  spe_comp=sesp_comp$specificity
+  # 4. 提取数据用于PPV/NPV计算
+  a <- tab$diseased[1,1]; b <- tab$diseased[1,2]
+  c <- tab$diseased[2,1]; d_val <- tab$diseased[2,2]  # 改名为d_val避免与函数d冲突
+  e <- tab$non.diseased[1,1]; f <- tab$non.diseased[1,2]
+  g <- tab$non.diseased[2,1]; h <- tab$non.diseased[2,2]
+  
+  # 5. 计算PPV和检验
+  ppv1 <- a / (a + e)
+  ppv2 <- (a + c) / (a + c + e + g)
+  ppv_diff <- ppv1 - ppv2
+  ppv_p <- if(b + e > 0) {
+    chi2 <- (abs(b - e) - 0.5)^2 / (b + e)
+    pchisq(chi2, df = 1, lower.tail = FALSE)
+  } else NA
+  
+  # 6. 计算NPV和检验
+  npv1 <- (d_val + h) / (b + d_val + f + h)
+  npv2 <- h / (b + d_val + f + h)
+  npv_diff <- npv1 - npv2
+  npv_p <- if(g + c > 0) {
+    chi2 <- (abs(g - c) - 0.5)^2 / (g + c)
+    pchisq(chi2, df = 1, lower.tail = FALSE)
+  } else NA
+  # 8. 创建结果表
+  results <- data.frame(
+    Metric = c("Sensitivity", "Specificity", "PPV", "NPV"),
+    Difference = c(sen_comp[["diff"]], spe_comp[["diff"]], ppv_diff, npv_diff),
+    P_value = c(sen_comp[["p.value"]], spe_comp[["p.value"]], ppv_p, npv_p),
+    Significant = c(
+      ifelse(sesp_comp[["sensitivity"]][["p.value"]] < 0.05, "Yes", "No"),
+      ifelse(sesp_comp[["specificity"]][["p.value"]] < 0.05, "Yes", "No"),
+      ifelse(ppv_p < 0.05, "Yes", "No"),
+      ifelse(npv_p < 0.05, "Yes", "No")
+    )
+  )
+  
+  return(list(
+    contingency_table = tab,
+    comparison_results = results
+  ))
+}
+#
+
+dc=data.frame(M9=ifelse(a$SCC>2.7|a$CEA>5|a$CYR>3.3,1,0),#"TMcombine(+)","TMcombine(-)"
+              ESCCseeker=ifelse(yp4$pre<=yd_cutoff,0,1),
+              histopathology=qz$group)
+d=ifelse(dc$histopathology%in%c("ESCC","HGIN"),1,0)
+d=ifelse(dc$histopathology%in%c("ESCC","LGIN"),1,0)
+to1=data.frame()
+for (set in c("Training set","Test set","Validation set")) {
+  da=yp[yp$cohort==set,]
+  for (h in c("ESCC","HGIN","ESCC/HGIN")) {
+    if (sum(da$class==h)==0) next
+    data=da[da$class%in%c(h,"Control"),]
+    roc1=roc(group~ESCCseeker,data,direction = "<")
+    roc2=roc(group~M9,data,direction = "<")
+    delong=roc.test(roc1,roc2,method = "delong")
+    p=round(delong$p.value,4)
+    auc=paste0(round(delong[["roc1"]][["auc"]],3),"-",round(delong[["roc2"]][["auc"]],3))
+    dc=data.frame(M9=ifelse(data$M9>0.43,1,0),#"TMcombine(+)","TMcombine(-)"
+                    ESCCseeker=ifelse(data$ESCCseeker<=0.5,0,1),
+                    histopathology=data$group)
+    d=ifelse(dc$histopathology==0,0,1)
+    results <- compare_diagnostic_tests(d, dc$ESCCseeker, dc$M9, test_names = c("ESCCseeker", "M9"))
+    to1=rbind(to1,cbind(set=set,type=h,AUC = auc,delong=p,Sen.p=results$comparison_results$Significant[1],Spe.p=results$comparison_results$Significant[2]))
+  }
+}
+write.csv(to1,paste0(File,"tableS3'.csv"))
+#六、医院效应=========================
+# 这种情况只需要考虑医院效应（Site），不需要Batch变量
+data<- read_excel("D:/ESCC/芯片图谱/中文/S/ESCC1217.xlsx", sheet = 3)         # 指定工作表索引[^69^]
+data <- column_to_rownames(data,var = "id")
+gene=c("cg03396260", "cg05914150", "cg07475126", "cg17968322", "cg18657707", 
+       "cg19572487", "cg20184330", "cg20381728", "cg22823192")
+df=data[data$gg=="wai",c("group",gene)]##三维
+df$Site=substr(rownames(df),1, 2)
+sample_info <- data.frame(
+  SampleID = paste0("S", 1:96),
+  Site = rep(paste0("Hospital", 1:8), each = 12),  # 8家医院
+  Disease = rep(c("ESCC", "Control"), times = 48),
+  # 没有Batch列，或者所有样本Batch相同
+  Batch = "Run1"  # 全部相同
+)
+# 方差分解公式（同时考虑医院和批次）
+#formula <- ~ (1 | Site) + (1 | Batch) + Disease
+# 方差分解公式（只考虑医院效应）
+formula <- ~ (1 | Site) + Disease
+varPart <- fitExtractVarPartModel(methyl_matrix_m, formula, sample_info)
+
+# 查看结果（每个CpG位点的方差组分）
+head(varPart)
+
+# 计算全局中位数
+var_median <- apply(varPart[, c("Site", "Disease", "Residuals")], 2, median)
+print("方差分解结果（中位数）：")
+print(round(var_median * 100, 2))
+
+# 可视化方差组分
+var_df <- data.frame(
+  Variable = names(var_median),
+  Variance = var_median
+)
+
+ggplot(var_df, aes(x = Variable, y = Variance, fill = Variable)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  geom_text(aes(label = paste0(round(Variance * 100, 1), "%")), 
+            vjust = -0.5, size = 6) +
+  labs(title = "Variance Components in Methylation Data",
+       subtitle = "Median variance explained across all CpG sites",
+       y = "Proportion of Variance Explained") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  ylim(0, 1)
+# 构建设计矩阵（包含医院和疾病状态）
+# 注意：将医院作为固定效应（或随机效应）
+design <- model.matrix(~ 0 + Disease + Site, data = sample_info)
+# 或者使用因子形式
+# design <- model.matrix(~ Disease + Site, data = sample_info)
+
+# 查看设计矩阵
+head(design)
+
+# 线性模型拟合
+fit <- lmFit(methyl_matrix_m, design)
+
+# 定义对比：ESCC vs Control（校正医院效应后）
+# 假设DiseaseESCC是系数名
+contrast_matrix <- makeContrasts(
+  ESCC_vs_Control = DiseaseESCC,  # 如果设计是 ~0 + Disease + Site
+  levels = design
+)
+
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
+
+# 提取差异结果
+results <- topTable(fit2, coef = "ESCC_vs_Control", number = Inf, 
+                    adjust.method = "BH")
+
+# 筛选显著DMP（FDR < 0.05 且 |Δβ| > 0.1）
+results$delta_beta <- results$logFC * log2(1.1)  # 近似转换（如果使用M值）
+# 更精确的β值差异需要从原始β矩阵计算
+
+sig_dmp <- results[results$adj.P.Val < 0.05 & abs(results$logFC) > 0.2, ]
+# 对于甲基化数据，logFC > 0.2 通常相当于 Δβ > 0.1
+
+print(paste0("显著差异甲基化位点数量: ", nrow(sig_dmp)))

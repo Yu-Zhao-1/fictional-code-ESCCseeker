@@ -1,4 +1,6 @@
-
+for (pkg in names(sessionInfo()$otherPkgs)) {
+  detach(paste0("package:", pkg), character.only = TRUE, unload = TRUE)
+}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(Iso)

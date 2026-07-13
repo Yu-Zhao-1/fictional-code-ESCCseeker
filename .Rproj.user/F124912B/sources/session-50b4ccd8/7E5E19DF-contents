@@ -1,6 +1,7 @@
 rownames(train)=NULL
 rownames(test)=NULL
 rownames(verification)=NULL
+rownames(yp5)=NULL
 gene0=c("cg03396260", "cg05914150", "cg07475126", "cg17968322", "cg18657707", 
         "cg19572487", "cg20184330", "cg20381728", "cg22823192")
 gene1=c("sex", "age", "SCC", "CYR", "cg03396260", "cg05914150", "cg07475126","cg17968322", "cg19572487", "cg20184330", "cg20381728", "cg22823192")
@@ -53,7 +54,7 @@ df=yp1#train
 a1=a2[rownames(train),]
 
 h=ifelse(a1$CEA<=5&a1$SCC<=2.7&a1$CYR<=3.3,0,1)
-yp3=data.frame(group=df$class,ESCCseeker=df$pre,Methy9=df$M9,CEA=a1$CEA,SCC=a1$SCC,CYR=a1$CYR,TMcombine=h,class=df$class)
+yp1=data.frame(group=df$class,ESCCseeker=df$pre,Methy9=df$M9,CEA=a1$CEA,SCC=a1$SCC,CYR=a1$CYR,TMcombine=h,class=df$class)
 #yp$group=factor(yp$group,levels =c("Control","HGIN","ESCC") )
 #yp$group=as.numeric(yp$group)-1
 yp1$class=ifelse(yp1$group==0,0,1)
